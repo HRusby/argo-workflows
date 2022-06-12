@@ -7,10 +7,12 @@ interface Resource {
 }
 
 type Type = 'ADDED' | 'MODIFIED' | 'DELETED' | 'ERROR';
-type Sorter = (a: Resource, b: Resource) => number;
+export type Sorter = (a: Resource, b: Resource) => number;
 
 // put the youngest at the start of the list
 export const sortByYouth: Sorter = (a: Resource, b: Resource) => b.metadata.creationTimestamp.localeCompare(a.metadata.creationTimestamp);
+export const sortByName: Sorter = (a:Resource, b:Resource) => b.metadata.name.localeCompare(a.metadata.name);
+export const sortByNamespace: Sorter = (a:Resource, b:Resource) => b.metadata.namespace.localeCompare(a.metadata.namespace);
 
 /**
  * ListWatch allows you to start watching for changes, automatically reconnecting on error.
@@ -20,7 +22,7 @@ export class ListWatch<T extends Resource> {
     private readonly onLoad: (metadata: kubernetes.ListMeta) => void;
     private readonly onChange: (items: T[], item?: T, type?: Type) => void;
     private readonly onError: (error: Error) => void;
-    private readonly sorter: (a: T, b: T) => number;
+    private sorter: (a: T, b: T) => number;
     private items: T[];
     private retryWatch: RetryWatch<T>;
     private timeout: any;
@@ -68,7 +70,7 @@ export class ListWatch<T extends Resource> {
                 this.reconnect();
             });
     }
-
+    
     // Stop watching.
     // Must invoke on component unload.
     // Idempotent.

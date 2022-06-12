@@ -15,7 +15,9 @@ import {PaginationPanel} from '../../../shared/components/pagination-panel';
 import {Query} from '../../../shared/components/query';
 import {ZeroState} from '../../../shared/components/zero-state';
 import {Consumer} from '../../../shared/context';
-import {ListWatch, sortByYouth} from '../../../shared/list-watch';
+import {ListWatch, Sorter, sortByName, sortByYouth, sortByNamespace } from '../../../shared/list-watch';
+import {Time} from 'argo-ui/src/models/kubernetes';
+import {wfDuration} from '../../../shared/duration';
 import {Pagination, parseLimit} from '../../../shared/pagination';
 import {ScopedLocalStorage} from '../../../shared/scoped-local-storage';
 import {services} from '../../../shared/services';
@@ -38,6 +40,8 @@ interface State {
     resourceVersion?: string;
     error?: Error;
     batchActionDisabled: Actions.OperationDisabled;
+    sorter?: Sorter;
+    asc: Boolean;
 }
 
 interface WorkflowListRenderOptions {
@@ -55,6 +59,29 @@ const allBatchActionsEnabled: Actions.OperationDisabled = {
     TERMINATE: false,
     DELETE: false
 };
+
+function handleUndefinedInSort(val1:any, val2:any, sortingFunction:(a:any, b:any)=>number){
+  if(val1 === undefined && val2===undefined){
+    return 0;
+  }else if (val1 === undefined){
+    return 1;
+  }else if (val2 === undefined){
+    return -1;
+  }
+  return sortingFunction(val1, val2);
+}
+
+const sortByStarted: Sorter = (a:Workflow, b:Workflow) => handleUndefinedInSort(b.status.startedAt, a.status.startedAt, (x:Time, y:Time)=>x.localeCompare(y))
+const sortByFinished: Sorter = (a:Workflow, b:Workflow) => handleUndefinedInSort(b.status.finishedAt, a.status.finishedAt, (x:Time, y:Time)=>x.localeCompare(y))
+const sortByDuration: Sorter = (a:Workflow, b:Workflow) => {
+  var bDuration = wfDuration(b.status);
+  var aDuration = wfDuration(a.status);
+  if(aDuration > bDuration){ return 1; }
+  else if (aDuration < bDuration) {return -1;}
+  return 0;
+}
+const sortByProgress: Sorter = (a:Workflow, b:Workflow) => handleUndefinedInSort(b.status.progress, a.status.progress, (x:string, y:string)=>x.localeCompare(y));
+const sortByMessage: Sorter = (a:Workflow, b:Workflow) => handleUndefinedInSort(b.status.message, a.status.message, (x:string, y:string)=>x.localeCompare(y));//b.status.message.localeCompare(a.status.message);
 
 export class WorkflowsList extends BasePage<RouteComponentProps<any>, State> {
     private storage: ScopedLocalStorage;
@@ -115,7 +142,9 @@ export class WorkflowsList extends BasePage<RouteComponentProps<any>, State> {
             selectedPhases: phaseQueryParam.length > 0 ? (phaseQueryParam as WorkflowPhase[]) : savedOptions.selectedPhases,
             selectedLabels: labelQueryParam.length > 0 ? (labelQueryParam as string[]) : savedOptions.selectedLabels,
             selectedWorkflows: new Map<string, models.Workflow>(),
-            batchActionDisabled: {...allBatchActionsEnabled}
+            batchActionDisabled: {...allBatchActionsEnabled},
+            sorter: sortByYouth,
+            asc: true
         };
     }
 
@@ -195,6 +224,19 @@ export class WorkflowsList extends BasePage<RouteComponentProps<any>, State> {
         );
     }
 
+    // Updating State to reflect new sorter and change sort order if sorter is the same
+    // After State is updated force invoking fetchWorkflows to ensure sort is applied
+    private changeSort(newSorter: Sorter){
+      this.setState({
+          sorter: newSorter,
+          asc: newSorter === this.state.sorter ? !this.state.asc : this.state.asc
+        }, 
+        ()=> {
+          this.fetchWorkflows(this.state.namespace, this.state.selectedPhases, this.state.selectedLabels, this.state.pagination);
+        }
+      )
+    } 
+  
     private fetchWorkflows(namespace: string, selectedPhases: WorkflowPhase[], selectedLabels: string[], pagination: Pagination): void {
         if (this.listWatch) {
             this.listWatch.stop();
@@ -217,7 +259,7 @@ export class WorkflowsList extends BasePage<RouteComponentProps<any>, State> {
             () => this.setState({error: null}),
             workflows => this.setState({workflows: workflows.slice(0, this.state.pagination.limit || 999999)}),
             error => this.setState({error}),
-            sortByYouth
+            this.state.sorter
         );
         this.listWatch.start();
     }
@@ -294,47 +336,18 @@ export class WorkflowsList extends BasePage<RouteComponentProps<any>, State> {
                                     />
                                 </div>
                                 <div className='row small-11'>
-                                    <div className='columns small-3'>NAME</div>
-                                    <div className='columns small-1'>NAMESPACE</div>
-                                    <div className='columns small-1'>STARTED</div>
-                                    <div className='columns small-1'>FINISHED</div>
-                                    <div className='columns small-1'>DURATION</div>
-                                    <div className='columns small-1'>PROGRESS</div>
-                                    <div className='columns small-2'>MESSAGE</div>
-                                    <div className='columns small-1'>DETAILS</div>
+                                    {this.getHeaderRow(3, 'NAME', sortByName)}
+                                    {this.getHeaderRow(1, 'NAMESPACE', sortByNamespace)}
+                                    {this.getHeaderRow(1, 'STARTED', sortByStarted)}
+                                    {this.getHeaderRow(1, 'FINISHED', sortByFinished)}
+                                    {this.getHeaderRow(1, 'DURATION', sortByDuration)}
+                                    {this.getHeaderRow(1, 'PROGRESS', sortByProgress)}
+                                    {this.getHeaderRow(2, 'MESSAGE', sortByMessage)}
+                                    {this.getHeaderRow(1, 'DETAILS', null)}
+                                    {/* <div className='columns small-1'>DETAILS</div> */}
                                 </div>
                             </div>
-                            {this.state.workflows.map(wf => {
-                                return (
-                                    <WorkflowsRow
-                                        workflow={wf}
-                                        key={wf.metadata.uid}
-                                        checked={this.state.selectedWorkflows.has(wf.metadata.uid)}
-                                        onChange={key => {
-                                            const value = `${key}=${wf.metadata.labels[key]}`;
-                                            let newTags: string[] = [];
-                                            if (this.state.selectedLabels.indexOf(value) === -1) {
-                                                newTags = this.state.selectedLabels.concat(value);
-                                                this.setState({selectedLabels: newTags});
-                                            }
-                                            this.changeFilters(this.state.namespace, this.state.selectedPhases, newTags, this.state.pagination);
-                                        }}
-                                        select={subWf => {
-                                            const wfUID = subWf.metadata.uid;
-                                            if (!wfUID) {
-                                                return;
-                                            }
-                                            const currentlySelected: Map<string, Workflow> = this.state.selectedWorkflows;
-                                            if (!currentlySelected.has(wfUID)) {
-                                                currentlySelected.set(wfUID, subWf);
-                                            } else {
-                                                currentlySelected.delete(wfUID);
-                                            }
-                                            this.updateCurrentlySelectedAndBatchActions(currentlySelected);
-                                        }}
-                                    />
-                                );
-                            })}
+                            {this.generateWfRows()}
                         </div>
                         <PaginationPanel
                             onChange={pagination => this.changeFilters(this.state.namespace, this.state.selectedPhases, this.state.selectedLabels, pagination)}
@@ -345,6 +358,56 @@ export class WorkflowsList extends BasePage<RouteComponentProps<any>, State> {
                 )}
             </>
         );
+    }
+    
+    private getHeaderRow(columnLength:number, header:string, sortingFunction:Sorter){
+      if(sortingFunction === null){
+        return <div className={'columns small-'+columnLength}>{header}</div>
+      }
+      var symbol = this.state.asc ? '↑' : '↓'
+      return <div className={'columns small-'+columnLength} onClick={()=>{this.changeSort(sortingFunction)}}>
+        {header} {this.state.sorter === sortingFunction ? symbol : null}
+      </div>
+    }
+
+    private generateWfRows(){
+        var wfList = null
+        if(this.state.asc == true){
+          wfList = this.state.workflows
+        } else {
+          wfList = this.state.workflows.reverse()
+        }
+        return wfList.reverse().map(wf => {
+          return (
+            <WorkflowsRow
+                workflow={wf}
+                key={wf.metadata.uid}
+                checked={this.state.selectedWorkflows.has(wf.metadata.uid)}
+                onChange={key => {
+                    const value = `${key}=${wf.metadata.labels[key]}`;
+                    let newTags: string[] = [];
+                    if (this.state.selectedLabels.indexOf(value) === -1) {
+                        newTags = this.state.selectedLabels.concat(value);
+                        this.setState({selectedLabels: newTags});
+                    }
+                    this.changeFilters(this.state.namespace, this.state.selectedPhases, newTags, this.state.pagination);
+                }}
+                select={subWf => {
+                    const wfUID = subWf.metadata.uid;
+                    if (!wfUID) {
+                        return;
+                    }
+                    const currentlySelected: Map<string, Workflow> = this.state.selectedWorkflows;
+                    if (!currentlySelected.has(wfUID)) {
+                        currentlySelected.set(wfUID, subWf);
+                    } else {
+                        currentlySelected.delete(wfUID);
+                    }
+                    this.updateCurrentlySelectedAndBatchActions(currentlySelected);
+                }}
+            />
+          );
+        })
     }
 
     private updateCurrentlySelectedAndBatchActions(newSelectedWorkflows: Map<string, Workflow>): void {
